@@ -1,14 +1,14 @@
-
 use alloc::vec::Vec;
 
 use icicle_babybear::field::ScalarField;
-use icicle_core::ntt::{initialize_domain, ntt_inplace, release_domain, FieldImpl, NTTConfig, NTTDir};
+use icicle_core::ntt::{initialize_domain, ntt_inplace, release_domain, NTTConfig, NTTDir};
 use icicle_cuda_runtime::device_context::DeviceContext;
 use icicle_cuda_runtime::memory::HostSlice;
-use p3_dft::{Radix2Dit, Radix2DitParallel, TwoAdicSubgroupDft};
-use p3_field::{AbstractField, Field, TwoAdicField};
+use p3_dft::{Radix2DitParallel, TwoAdicSubgroupDft};
+use p3_field::{AbstractField, PrimeField32, TwoAdicField};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
+use p3_maybe_rayon::prelude::IntoParallelRefIterator;
 use p3_util::log2_strict_usize;
 
 use crate::BabyBear;
@@ -17,60 +17,86 @@ type F = BabyBear;
 
 /// GPU DFT/NTT for BabyBear with Ingonyama
 #[derive(Debug, Default, Clone)]
-pub struct BabyBearGpuDft;
+pub struct BabyBearIcicleDft;
 
-impl BabyBearGpuDft {
-    /// Compute the DFT of each column of `mat`.
-    ///
-    /// NB: The DFT works by packing pairs of `Mersenne31` values into
-    /// a `Mersenne31Complex` and doing a (half-length) DFT on the
-    /// result. In particular, the type of the result elements are in
-    /// the extension field, not the domain field.
-    pub fn dft_batch(mat: RowMajorMatrix<F>) -> RowMajorMatrix<F> {
+impl TwoAdicSubgroupDft<F> for BabyBearIcicleDft {
+    type Evaluations = RowMajorMatrix<F>;
+    fn dft_batch(&self, mat: RowMajorMatrix<F>) -> RowMajorMatrix<F> {
         let ctx = DeviceContext::default();
 
         let h = mat.height();
         let w = mat.width();
         let log_h = log2_strict_usize(h);
-        let plonky3_rou = BabyBear::two_adic_generator(log_h);
+        let root = F::two_adic_generator(log_h);
+
         // To compute FFTs using icicle, we first need to initialize it using plonky3's "two adic generator"
-        initialize_domain(ScalarField::from([plonky3_rou.as_canonical_u32()]), &ctx, false).unwrap();
-
-        let ntt_size = 1 << log_h;
-
-        let mut scalars: Vec<ScalarField> = <ScalarField as FieldImpl>::Config::generate_random(w * ntt_size);
-        let scalars_p3: Vec<BabyBear> = scalars
+        initialize_domain(ScalarField::from([root.as_canonical_u32()]), &ctx, false).unwrap();
+        let mut scalars: Vec<ScalarField> = mat
+            .values
             .iter()
-            .map(|x| BabyBear::from_wrapped_u32(Into::<[u32; 1]>::into(*x)[0]))
+            .map(|x| ScalarField::from([x.as_canonical_u32()]))
             .collect();
-        let matrix_p3 = RowMajorMatrix::new(scalars_p3, w);
+        // let scalars_p3: Vec<BabyBear> = scalars
+        //     .iter()
+        //     .map(|x| BabyBear::from_wrapped_u32(Into::<[u32; 1]>::into(*x)[0]))
+        //     .collect();
+        // let matrix_p3 = RowMajorMatrix::new(scalars_p3, w);
+        // assert_eq!(matrix_p3, mat);
 
         let mut ntt_cfg: NTTConfig<'_, ScalarField> = NTTConfig::default();
         // Next two lines signalize that we want to compute `nrows` FFTs in column-ordered fashion
         ntt_cfg.batch_size = w as i32;
         ntt_cfg.columns_batch = true;
-        ntt_inplace(HostSlice::from_mut_slice(&mut scalars[..]), NTTDir::kForward, &ntt_cfg).unwrap();
+        ntt_inplace(
+            HostSlice::from_mut_slice(&mut scalars[..]),
+            NTTDir::kForward,
+            &ntt_cfg,
+        )
+        .unwrap();
 
-        let result_p3 = Radix2DitParallel.dft_batch(matrix_p3);
-
-        for i in 0..w {
-            for j in 0..ntt_size {
-                assert_eq!(
-                    Into::<[u32; 1]>::into(scalars[i + j * w])[0],
-                    result_p3.inner.values[i + j * w].as_canonical_u32()
-                );
-            }
-        }
+        let result_p3: Vec<BabyBear> = scalars
+            .iter()
+            .map(|x| BabyBear::from_wrapped_u32(Into::<[u32; 1]>::into(*x)[0]))
+            .collect();
+        let matrix_p3 = RowMajorMatrix::new(result_p3, w);
+        // let result_p3_test = Radix2DitParallel.dft_batch(mat);
+        // assert_eq!(matrix_p3, result_p3_test.to_row_major_matrix());
 
         release_domain::<ScalarField>(&ctx).unwrap();
-
+        matrix_p3
     }
+}
 
-    // /// Compute the inverse DFT of each column of `mat`.
-    // ///
-    // /// NB: See comment on `dft_batch()` for information on packing.
-    // pub fn idft_batch<Dft: TwoAdicSubgroupDft<C>>(mat: RowMajorMatrix<C>) -> RowMajorMatrix<F> {
-    //     let dft = Dft::default();
-    //     idft_postprocess(dft.idft_batch(idft_preprocess(mat)))
-    // }
+/// GPU DFT/NTT for BabyBear with Sppark
+#[derive(Debug, Default, Clone)]
+pub struct BabyBearSpparkDft;
+
+const DEFAULT_GPU: usize = 0;
+
+impl TwoAdicSubgroupDft<F> for BabyBearSpparkDft {
+    type Evaluations = RowMajorMatrix<F>;
+    fn dft_batch(&self, mat: RowMajorMatrix<F>) -> RowMajorMatrix<F> {
+        let h = mat.height();
+        let rows: Vec<u32> = mat
+            .clone()
+            .transpose().rows()
+            .into_iter()
+            .map(|row| {
+                let mut row: Vec<u32> = row.map(|x| x.as_canonical_u32()).collect();
+                babybear_ntt::NTT(DEFAULT_GPU, &mut row, sppark::NTTInputOutputOrder::NN);
+                row
+            })
+            .flatten()
+            .collect();
+
+        let result_p3: Vec<BabyBear> = rows
+            .iter()
+            .map(|x| BabyBear::from_wrapped_u32(*x))
+            .collect();
+        let matrix_p3 = RowMajorMatrix::new(result_p3, h).transpose();
+        // let result_p3_test = Radix2DitParallel.dft_batch(mat);
+        // assert_eq!(matrix_p3, result_p3_test.to_row_major_matrix());
+
+        matrix_p3
+    }
 }

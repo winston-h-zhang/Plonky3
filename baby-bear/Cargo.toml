@@ -11,6 +11,7 @@ nightly-features = []
 p3-dft = { path = "../dft" }
 p3-field = { path = "../field" }
 p3-matrix = { path = "../matrix" }
+p3-maybe-rayon = { path = "../maybe-rayon" }
 p3-mds = { path = "../mds" }
 p3-poseidon2 = { path = "../poseidon2" }
 p3-symmetric = { path = "../symmetric" }
@@ -18,9 +19,15 @@ p3-util = { path = "../util" }
 num-bigint = { version = "0.4.3", default-features = false }
 rand = "0.8.5"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+# Icicle dependencies
 icicle-cuda-runtime = { git = "https://github.com/ingonyama-zk/icicle.git" }
 icicle-core = { git = "https://github.com/ingonyama-zk/icicle.git" }
 icicle-babybear = { git = "https://github.com/ingonyama-zk/icicle.git" }
+
+# Sppark dependencies
+sppark = "~0.1.2"
+babybear-ntt = { git = "https://github.com/winston-h-zhang/babybear-ntt.git" }
 
 [dev-dependencies]
 p3-field-testing = { path = "../field-testing" }
