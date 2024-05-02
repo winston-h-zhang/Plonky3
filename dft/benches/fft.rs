@@ -1,7 +1,7 @@
 use std::any::type_name;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use p3_baby_bear::BabyBear;
+use p3_baby_bear::{BabyBear, BabyBearIcicleDft, BabyBearSpparkDft};
 use p3_dft::{Radix2Bowers, Radix2Dit, Radix2DitParallel, TwoAdicSubgroupDft};
 use p3_field::extension::Complex;
 use p3_field::TwoAdicField;
@@ -20,9 +20,11 @@ fn bench_fft(c: &mut Criterion) {
 
     const BATCH_SIZE: usize = 100;
 
-    fft::<BabyBear, Radix2Dit<_>, BATCH_SIZE>(c, log_sizes);
-    fft::<BabyBear, Radix2Bowers, BATCH_SIZE>(c, log_sizes);
-    fft::<BabyBear, Radix2DitParallel, BATCH_SIZE>(c, log_sizes);
+    // fft::<BabyBear, Radix2Dit<_>, BATCH_SIZE>(c, log_sizes);
+    // fft::<BabyBear, Radix2Bowers, BATCH_SIZE>(c, log_sizes);
+    // fft::<BabyBear, Radix2DitParallel, BATCH_SIZE>(c, log_sizes);
+    fft::<BabyBear, BabyBearIcicleDft, BATCH_SIZE>(c, log_sizes);
+    fft::<BabyBear, BabyBearSpparkDft, BATCH_SIZE>(c, log_sizes);
     fft::<Goldilocks, Radix2Dit<_>, BATCH_SIZE>(c, log_sizes);
     fft::<Goldilocks, Radix2Bowers, BATCH_SIZE>(c, log_sizes);
     fft::<Goldilocks, Radix2DitParallel, BATCH_SIZE>(c, log_sizes);
